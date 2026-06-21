@@ -6,15 +6,31 @@ export const config = {
 };
 
 function setCors(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  const origin = req.headers.origin || '*';
+
+  if (origin === '*') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+
+  const requestHeaders =
+    req.headers['access-control-request-headers'] ||
+    'Content-Type, Authorization, X-Requested-With, X-API-Key, x-api-key, Cache-Control, Pragma';
+
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
+  res.setHeader('Access-Control-Allow-Headers', requestHeaders);
+  res.setHeader('Access-Control-Max-Age', '86400');
   res.setHeader(
-    'Access-Control-Allow-Headers',
-    'Content-Type, Authorization'
+    'Access-Control-Expose-Headers',
+    'Content-Type, Content-Length, X-Parse-Mode'
   );
 }
 
-function sendJson(res, statusCode, data) {
+function sendJson(req, res, statusCode, data) {
+  setCors(req, res);
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   return res.end(JSON.stringify(data, null, 2));
@@ -96,7 +112,7 @@ function normalizeTypes(types) {
   if (!types) return [];
 
   if (Array.isArray(types)) {
-    return types.map(String);
+    return types.map(String).map((s) => s.trim()).filter(Boolean);
   }
 
   if (typeof types === 'string') {
@@ -119,6 +135,7 @@ const EXT_MAP = {
     'bmp',
     'svg',
     'avif',
+    'ico',
   ],
   video: [
     'mp4',
@@ -165,22 +182,27 @@ function typeCodeToNames(types) {
   const result = new Set();
 
   for (const t of normalized) {
-    if (t === '1' || t.toLowerCase() === 'image') {
+    const lower = t.toLowerCase();
+
+    if (t === '1' || lower === 'image' || lower === 'images') {
       result.add('image');
     }
 
-    if (t === '4' || t.toLowerCase() === 'video') {
+    if (t === '4' || lower === 'video' || lower === 'videos') {
       result.add('video');
     }
 
-    if (t === '5' || t.toLowerCase() === 'audio') {
+    if (t === '5' || lower === 'audio' || lower === 'audios') {
       result.add('audio');
     }
 
     if (
       t === '2' ||
-      t.toLowerCase() === 'document' ||
-      t.toLowerCase() === 'other'
+      lower === 'document' ||
+      lower === 'documents' ||
+      lower === 'file' ||
+      lower === 'files' ||
+      lower === 'other'
     ) {
       result.add('document');
     }
@@ -225,16 +247,18 @@ function classifyResource(resourceUrl) {
 function absolutizeUrl(rawUrl, baseUrl) {
   if (!rawUrl) return null;
 
-  const cleaned = rawUrl
+  const cleaned = String(rawUrl)
     .trim()
     .replace(/^['"]|['"]$/g, '')
     .replace(/&amp;/g, '&');
 
   if (
+    !cleaned ||
     cleaned.startsWith('data:') ||
     cleaned.startsWith('javascript:') ||
     cleaned.startsWith('mailto:') ||
-    cleaned.startsWith('tel:')
+    cleaned.startsWith('tel:') ||
+    cleaned.startsWith('#')
   ) {
     return null;
   }
@@ -250,7 +274,7 @@ function extractResourceUrls(html, baseUrl) {
   const urls = new Set();
 
   const attrRegex =
-    /\b(?:src|href|data-src|data-original|poster)=["']([^"']+)["']/gi;
+    /\b(?:src|href|data-src|data-original|data-url|poster|content)=["']([^"']+)["']/gi;
 
   let match;
 
@@ -259,8 +283,14 @@ function extractResourceUrls(html, baseUrl) {
     if (abs) urls.add(abs);
   }
 
-  const absoluteUrlRegex =
-    /https?:\/\/[^\s"'<>\\)]+/gi;
+  const cssUrlRegex = /url\(["']?([^"')]+)["']?\)/gi;
+
+  while ((match = cssUrlRegex.exec(html)) !== null) {
+    const abs = absolutizeUrl(match[1], baseUrl);
+    if (abs) urls.add(abs);
+  }
+
+  const absoluteUrlRegex = /https?:\/\/[^\s"'<>\\)]+/gi;
 
   while ((match = absoluteUrlRegex.exec(html)) !== null) {
     const abs = absolutizeUrl(match[0], baseUrl);
@@ -272,9 +302,7 @@ function extractResourceUrls(html, baseUrl) {
 
 function filterResources(urls, options = {}) {
   const targetTypes = typeCodeToNames(options.types);
-  const keyword = String(options.keyword || '')
-    .trim()
-    .toLowerCase();
+  const keyword = String(options.keyword || '').trim().toLowerCase();
 
   const items = [];
 
@@ -307,20 +335,31 @@ export default async function handler(req, res) {
   setCors(req, res);
 
   if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+    res.statusCode = 204;
+    return res.end();
+  }
+
+  if (req.method === 'HEAD') {
+    res.statusCode = 200;
+    return res.end();
   }
 
   if (req.method === 'GET') {
     const targetUrl = req.query?.url;
 
     if (!targetUrl) {
-      return sendJson(res, 200, {
+      return sendJson(req, res, 200, {
         ok: true,
+        success: true,
+        status: 'ok',
+        ready: true,
         service: 'codexab-parse',
+        endpoint: '/api/parse',
+        methods: ['GET', 'POST', 'OPTIONS', 'HEAD'],
         usage: {
-          html: 'POST /api/parse with { "url": "https://example.com" }',
-          filtered:
-            'POST /api/parse with { "url": "https://example.com", "types": [4], "keyword": "mp4" }',
+          html: 'POST /api/parse with JSON body: { "url": "https://example.com" }',
+          extract:
+            'POST /api/parse with JSON body: { "url": "https://example.com", "mode": "extract", "types": [4], "keyword": "mp4" }',
           typeCodes: {
             1: 'image',
             2: 'document/other',
@@ -344,7 +383,8 @@ export default async function handler(req, res) {
     const body = await readRequestBody(req);
 
     if (!body.url) {
-      return sendJson(res, 400, {
+      return sendJson(req, res, 400, {
+        ok: false,
         error: 'Missing target url parameter',
       });
     }
@@ -352,7 +392,8 @@ export default async function handler(req, res) {
     return handleParse(req, res, body);
   }
 
-  return sendJson(res, 405, {
+  return sendJson(req, res, 405, {
+    ok: false,
     error: 'Method Not Allowed',
   });
 }
@@ -364,18 +405,20 @@ async function handleParse(req, res, options) {
     const parsedUrl = new URL(targetUrl);
 
     if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-      return sendJson(res, 400, {
+      return sendJson(req, res, 400, {
+        ok: false,
         error: 'Invalid url protocol',
       });
     }
 
     if (isPrivateOrLocalUrl(targetUrl)) {
-      return sendJson(res, 403, {
+      return sendJson(req, res, 403, {
+        ok: false,
         error: 'Private or local url is not allowed',
       });
     }
 
-    const response = await fetch(targetUrl, {
+    const upstream = await fetch(targetUrl, {
       method: 'GET',
       headers: {
         'User-Agent':
@@ -385,19 +428,22 @@ async function handleParse(req, res, options) {
       },
     });
 
-    const contentType =
-      response.headers.get('content-type') || '';
+    const contentType = upstream.headers.get('content-type') || '';
+    const server = upstream.headers.get('server') || '';
+    const cfRay = upstream.headers.get('cf-ray') || '';
 
-    const html = await response.text();
+    const html = await upstream.text();
 
     const shouldExtract =
       options.mode === 'extract' ||
+      options.extract === true ||
       options.keyword ||
       normalizeTypes(options.types).length > 0;
 
     if (!shouldExtract) {
-      res.statusCode = response.status;
+      res.statusCode = upstream.status;
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('X-Parse-Mode', 'html');
       return res.end(html);
     }
 
@@ -407,21 +453,34 @@ async function handleParse(req, res, options) {
       keyword: options.keyword,
     });
 
-    return sendJson(res, response.status, {
-      ok: response.ok,
+    return sendJson(req, res, upstream.status, {
+      ok: upstream.ok,
+      success: upstream.ok,
+      status: upstream.ok ? 'ok' : 'upstream_error',
       mode: 'extract',
       targetUrl,
-      upstreamStatus: response.status,
+      upstreamStatus: upstream.status,
       upstreamContentType: contentType,
+      server,
+      cfRay,
       filters: {
         types: normalizeTypes(options.types),
+        resolvedTypes: typeCodeToNames(options.types),
         keyword: options.keyword || '',
       },
       count: items.length,
       items,
+      debug: {
+        totalUrlsFound: urls.length,
+        htmlPreview:
+          items.length === 0 ? html.slice(0, 500) : undefined,
+      },
     });
   } catch (error) {
-    return sendJson(res, 500, {
+    return sendJson(req, res, 500, {
+      ok: false,
+      success: false,
+      status: 'error',
       error: error.message || 'Parse request failed',
     });
   }
