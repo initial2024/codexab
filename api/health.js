@@ -1,18 +1,15 @@
-function setCors(res: any) {
+function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type,Authorization,X-Requested-With"
-  );
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
   res.setHeader("Cache-Control", "no-store");
 }
 
-function normalizeBaseUrl(input: string) {
+function normalizeBaseUrl(input) {
   return String(input || "").trim().replace(/\/+$/, "");
 }
 
-export default function handler(req: any, res: any) {
+export default function handler(req, res) {
   setCors(res);
 
   if (req.method === "OPTIONS") {
@@ -22,8 +19,8 @@ export default function handler(req: any, res: any) {
   if (req.method !== "GET") {
     return res.status(405).json({
       ok: false,
-      success: false,
       error: "Method Not Allowed",
+      allow: ["GET", "OPTIONS"],
     });
   }
 
@@ -36,14 +33,10 @@ export default function handler(req: any, res: any) {
 
   return res.status(200).json({
     ok: true,
-    success: true,
-    status: "ok",
-    ready: true,
-
-    service: "codexab-base-backend",
+    service: "selfhost-cloud-backend",
     projectType: "base-extract-backend",
     version: "selfhost-base-v1",
-    runtime: "vercel-node",
+    runtime: "vercel-serverless",
     time: new Date().toISOString(),
 
     capabilities: {
@@ -67,7 +60,7 @@ export default function handler(req: any, res: any) {
       baseUrl: hasDeepBackend ? deepParseBaseUrl : null,
       note: hasDeepBackend
         ? "Deep parse requests are forwarded to the configured deep backend."
-        : "DEEP_PARSE_BASE_URL is not configured, so /api/render-parse is unavailable.",
+        : "DEEP_PARSE_BASE_URL is not configured, so deep parse is unavailable.",
     },
 
     costNotice: {
@@ -78,6 +71,6 @@ export default function handler(req: any, res: any) {
     },
 
     warning:
-      "This is a self-hosted compatible backend. Diagnostics are only for configuration checking and do not guarantee all websites, models, or upstream providers will work.",
+      "This is a self-hosted backend. Diagnostics are only for configuration checking and do not guarantee all websites, models, or upstream providers will work.",
   });
 }
