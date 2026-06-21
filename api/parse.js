@@ -63,6 +63,12 @@ function setCors(req, res) {
   );
 }
 
+function sendJson(res, statusCode, data) {
+  res.statusCode = statusCode;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  return res.end(JSON.stringify(data, null, 2));
+}
+
 function safeJsonParse(value, fallback = {}) {
   if (!value) return fallback;
   if (typeof value === 'object') return value;
@@ -103,6 +109,7 @@ function isPrivateOrLocalUrl(targetUrl) {
       host === '127.0.0.1' ||
       host === '0.0.0.0' ||
       host === '::1' ||
+      host === '[::1]' ||
       host.endsWith('.local')
     ) {
       return true;
@@ -160,6 +167,11 @@ function checkProxyToken(req) {
   if (!PROXY_TOKEN) return true;
 
   const token = req.headers['x-proxy-token'];
+
+  if (Array.isArray(token)) {
+    return token.includes(PROXY_TOKEN);
+  }
+
   return token === PROXY_TOKEN;
 }
 
@@ -189,7 +201,27 @@ function normalizeTargetUrl(targetUrl) {
   }
 }
 
-function buildUpstreamHeaders(req, body) {
+function buildModelPayload(body) {
+  if (
+    body.body &&
+    typeof body.body === 'object' &&
+    !Array.isArray(body.body)
+  ) {
+    return { ...body.body };
+  }
+
+  const finalBody = { ...body };
+
+  delete finalBody.apiUrl;
+  delete finalBody.apiKey;
+  delete finalBody.headers;
+  delete finalBody.url;
+  delete finalBody.body;
+
+  return finalBody;
+}
+
+function buildUpstreamHeaders(req, body, targetUrl) {
   const headersToSend = {
     'Content-Type': 'application/json',
   };
@@ -211,43 +243,73 @@ function buildUpstreamHeaders(req, body) {
     body.headers?.Authorization ||
     body.headers?.authorization ||
     req.headers.authorization ||
-    (body.apiKey ? `Bearer ${body.apiKey}` : '');
+    '';
 
   if (authHeader) {
     headersToSend.Authorization = authHeader;
   }
 
+  if (body.apiKey) {
+    try {
+      const host = new URL(targetUrl).hostname.toLowerCase();
+
+      if (host === 'api.anthropic.com') {
+        if (!headersToSend['x-api-key'] && !headersToSend['X-API-Key']) {
+          headersToSend['x-api-key'] = body.apiKey;
+        }
+
+        if (
+          !headersToSend['anthropic-version'] &&
+          !headersToSend['Anthropic-Version']
+        ) {
+          headersToSend['anthropic-version'] = '2023-06-01';
+        }
+      } else if (!headersToSend.Authorization) {
+        headersToSend.Authorization = `Bearer ${body.apiKey}`;
+      }
+    } catch {
+      if (!headersToSend.Authorization) {
+        headersToSend.Authorization = `Bearer ${body.apiKey}`;
+      }
+    }
+  }
+
   return headersToSend;
 }
 
-function buildModelPayload(body) {
-  if (
-    body.body &&
-    typeof body.body === 'object' &&
-    !Array.isArray(body.body)
-  ) {
-    return { ...body.body };
-  }
-
-  const finalBody = { ...body };
-
-  delete finalBody.apiUrl;
-  delete finalBody.apiKey;
-  delete finalBody.headers;
-  delete finalBody.url;
-  delete finalBody.body;
-
-  return finalBody;
-}
-
-async function sendUpstreamResponse(res, upstream) {
-  res.statusCode = upstream.status;
-
+async function sendUpstreamResponse(res, upstream, targetUrl) {
   const contentType =
     upstream.headers.get('content-type') ||
     'application/json; charset=utf-8';
 
+  const server = upstream.headers.get('server') || '';
+  const cfRay = upstream.headers.get('cf-ray') || '';
+
+  if (contentType.toLowerCase().includes('text/html')) {
+    const html = await upstream.text();
+
+    return sendJson(res, upstream.status, {
+      error: 'Upstream returned HTML instead of API JSON/SSE.',
+      upstreamStatus: upstream.status,
+      targetUrl,
+      contentType,
+      server,
+      cfRay,
+      likelyReason:
+        upstream.status === 403 || server.toLowerCase().includes('cloudflare')
+          ? 'Likely blocked by Cloudflare/WAF, or the upstream does not allow cloud/serverless IP access.'
+          : 'Likely wrong API endpoint. Check whether the request should go to /codex/responses or /v1/chat/completions.',
+      preview: html.slice(0, 800),
+    });
+  }
+
+  res.statusCode = upstream.status;
   res.setHeader('Content-Type', contentType);
+
+  if (contentType.toLowerCase().includes('text/event-stream')) {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+  }
 
   for (const [key, value] of upstream.headers.entries()) {
     const lower = key.toLowerCase();
@@ -286,108 +348,57 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  const currentUrl = new URL(
-    req.url,
-    `http://${req.headers.host || 'localhost'}`
-  );
+  if (req.method === 'GET') {
+    return sendJson(res, 200, {
+      ok: true,
+      service: 'codexab-ai-proxy',
+      endpoint: '/api/chat/proxy',
+      methods: ['GET', 'POST', 'OPTIONS'],
+      time: new Date().toISOString(),
+    });
+  }
 
-  const pathname = currentUrl.pathname;
+  if (req.method !== 'POST') {
+    return sendJson(res, 405, {
+      error: 'Method Not Allowed',
+    });
+  }
+
+  if (!checkProxyToken(req)) {
+    return sendJson(res, 401, {
+      error: 'Invalid proxy token',
+    });
+  }
+
   const body = await readRequestBody(req);
 
-  if (pathname === '/api/parse') {
-    if (req.method !== 'POST') {
-      return res.status(405).json({
-        error: 'Method Not Allowed',
-      });
-    }
+  let targetUrl = body.apiUrl || body.url || DEFAULT_AI_TARGET;
+  targetUrl = normalizeTargetUrl(targetUrl);
 
-    const videoUrl = body.url;
-
-    if (!videoUrl) {
-      return res.status(400).json({
-        error: 'Missing target url parameter',
-      });
-    }
-
-    try {
-      const parsedVideoUrl = new URL(videoUrl);
-
-      if (!['http:', 'https:'].includes(parsedVideoUrl.protocol)) {
-        return res.status(400).json({
-          error: 'Invalid url protocol',
-        });
-      }
-
-      if (isPrivateOrLocalUrl(videoUrl)) {
-        return res.status(403).json({
-          error: 'Private or local url is not allowed',
-        });
-      }
-
-      const response = await fetch(videoUrl, {
-        method: 'GET',
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
-          Accept:
-            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-      });
-
-      const html = await response.text();
-
-      res.statusCode = response.status;
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-
-      return res.send(html);
-    } catch (error) {
-      return res.status(500).json({
-        error: error.message || 'Parse request failed',
-      });
-    }
+  if (!isAllowedTargetUrl(targetUrl)) {
+    return sendJson(res, 403, {
+      error: 'Target host is not allowed',
+      targetUrl,
+      allowedHosts: ALLOWED_TARGET_HOSTS,
+      allowAnyHttpsTarget: ALLOW_ANY_HTTPS_TARGET,
+    });
   }
 
-  if (pathname === '/api/chat/proxy') {
-    if (req.method !== 'POST') {
-      return res.status(405).json({
-        error: 'Method Not Allowed',
-      });
-    }
+  const finalBody = buildModelPayload(body);
+  const headersToSend = buildUpstreamHeaders(req, body, targetUrl);
 
-    if (!checkProxyToken(req)) {
-      return res.status(401).json({
-        error: 'Invalid proxy token',
-      });
-    }
+  try {
+    const upstream = await fetch(targetUrl, {
+      method: 'POST',
+      headers: headersToSend,
+      body: JSON.stringify(finalBody),
+    });
 
-    let targetUrl = body.apiUrl || body.url || DEFAULT_AI_TARGET;
-    targetUrl = normalizeTargetUrl(targetUrl);
-
-    if (!isAllowedTargetUrl(targetUrl)) {
-      return res.status(403).json({
-        error: `Target host is not allowed: ${targetUrl}`,
-      });
-    }
-
-    const finalBody = buildModelPayload(body);
-    const headersToSend = buildUpstreamHeaders(req, body);
-
-    try {
-      const upstream = await fetch(targetUrl, {
-        method: 'POST',
-        headers: headersToSend,
-        body: JSON.stringify(finalBody),
-      });
-
-      return await sendUpstreamResponse(res, upstream);
-    } catch (error) {
-      return res.status(500).json({
-        error: error.message || 'Proxy request failed',
-      });
-    }
+    return await sendUpstreamResponse(res, upstream, targetUrl);
+  } catch (error) {
+    return sendJson(res, 500, {
+      error: error.message || 'Proxy request failed',
+      targetUrl,
+    });
   }
-
-  return res.status(404).json({
-    error: 'Endpoint Not Found in Vercel Worker.',
-  });
 }
