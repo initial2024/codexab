@@ -55,7 +55,7 @@ export default function handler(req, res) {
       modelCheck: enableModelCheck,
 
       // 现在还没加 /api/file/parse，所以这里先写 false
-      fileParse: true,
+      fileParse: true
     },
 
     endpoints: {
