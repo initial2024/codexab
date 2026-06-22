@@ -55,7 +55,7 @@ export default function handler(req, res) {
       modelCheck: enableModelCheck,
 
       // 现在还没加 /api/file/parse，所以这里先写 false
-      fileParse: false,
+      fileParse: true
     },
 
     endpoints: {
@@ -66,7 +66,7 @@ export default function handler(req, res) {
       modelCheck: enableModelCheck ? "/api/model-check" : null,
 
       // 现在还没加接口，所以这里先写 null
-      fileParse: null,
+      fileParse: "/api/file/parse"
     },
 
     routes: {
@@ -75,7 +75,7 @@ export default function handler(req, res) {
       parse: "/api/parse",
       renderParse: hasDeepBackend ? "/api/render-parse" : null,
       modelCheck: enableModelCheck ? "/api/model-check" : null,
-      fileParse: null,
+      fileParse: "/api/file/parse",
     },
 
     deepBackend: {
