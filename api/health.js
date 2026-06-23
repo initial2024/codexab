@@ -1,5 +1,3 @@
-import { Readable } from "node:stream";
-
 export const config = {
   api: {
     bodyParser: {
@@ -18,9 +16,12 @@ const DEFAULT_AI_BASE_URL =
 const ALLOWED_TARGET_HOSTS = (
   process.env.ALLOWED_TARGET_HOSTS ||
   [
+    "integrate.api.nvidia.com",
     "api.openai.com",
-    "new.sharedchat.cc",
     "api.deepseek.com",
+    "api2.jiushi.xin",
+    "api.jiushi.xin",
+    "new.sharedchat.cc",
     "api.siliconflow.cn",
     "dashscope.aliyuncs.com",
     "api.moonshot.cn",
@@ -28,7 +29,6 @@ const ALLOWED_TARGET_HOSTS = (
     "api.minimax.chat",
     "api.anthropic.com",
     "generativelanguage.googleapis.com",
-    "api.jiushi.xin",
   ].join(",")
 )
   .split(",")
@@ -68,26 +68,14 @@ function setCors(res) {
       "OpenAI-Project",
     ].join(", ")
   );
-  res.setHeader(
-    "Access-Control-Expose-Headers",
-    [
-      "Content-Type",
-      "Content-Disposition",
-      "X-Selfhost-Proxy",
-      "X-Proxy-Mode",
-      "X-Proxy-Version",
-      "X-Upstream-Target",
-      "X-Upstream-Status",
-    ].join(", ")
-  );
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Selfhost-Proxy", "true");
   res.setHeader("X-Proxy-Mode", "vercel-backend");
-  res.setHeader("X-Proxy-Version", "lingche-chat-proxy-final-standalone");
+  res.setHeader("X-Proxy-Version", "lingche-model-check-final");
 }
 
 function sendJson(res, statusCode, data) {
-  res.statusCode = statusCode;
+  res.status(statusCode);
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   return res.end(JSON.stringify(data, null, 2));
 }
@@ -104,17 +92,13 @@ function safeJsonParse(value, fallback = {}) {
 }
 
 async function readRequestBody(req) {
-  if (req.body) {
-    return safeJsonParse(req.body, {});
-  }
+  if (req.body) return safeJsonParse(req.body, {});
 
   try {
     const chunks = [];
-
     for await (const chunk of req) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
-
     const raw = Buffer.concat(chunks).toString("utf8");
     return safeJsonParse(raw, {});
   } catch {
@@ -131,75 +115,32 @@ function normalizeEndpoint(input) {
   return endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
 }
 
-function ensureUrl(input) {
+function ensureHttpsUrl(input) {
   const raw = String(input || "").trim();
-
   if (!raw) return raw;
-
-  if (/^https?:\/\//i.test(raw)) {
-    return raw;
-  }
-
+  if (/^https?:\/\//i.test(raw)) return raw;
   return `https://${raw}`;
 }
 
-function looksLikeFullApiEndpoint(urlString) {
-  try {
-    const url = new URL(ensureUrl(urlString));
-    const pathname = url.pathname.toLowerCase();
-
-    return (
-      pathname.endsWith("/chat/completions") ||
-      pathname.endsWith("/responses") ||
-      pathname.endsWith("/codex/responses") ||
-      pathname.endsWith("/messages") ||
-      pathname.endsWith("/images/generations") ||
-      pathname.endsWith("/audio/speech") ||
-      pathname.endsWith("/audio/transcriptions") ||
-      pathname.endsWith("/embeddings") ||
-      pathname.endsWith("/rerank") ||
-      pathname.includes("/v1/chat/completions")
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isLikelyBaseUrl(urlString) {
-  try {
-    const url = new URL(ensureUrl(urlString));
-    const pathname = url.pathname.replace(/\/+$/, "").toLowerCase();
-
-    return (
-      pathname === "" ||
-      pathname === "/" ||
-      pathname === "/v1" ||
-      pathname === "/api" ||
-      pathname === "/api/v1"
-    );
-  } catch {
-    return false;
-  }
-}
-
 function normalizeTargetUrl(targetUrl) {
-  const fixed = ensureUrl(targetUrl);
+  const fixed = ensureHttpsUrl(targetUrl);
 
   try {
     const parsedUrl = new URL(fixed);
     const hostname = parsedUrl.hostname.toLowerCase();
-    const pathOrig = parsedUrl.pathname.toLowerCase();
+    const pathname = parsedUrl.pathname.toLowerCase();
 
     if (hostname === "new.sharedchat.cc") {
-      if (pathOrig === "/" || pathOrig === "") {
+      if (
+        pathname === "/" ||
+        pathname === "" ||
+        pathname === "/codex" ||
+        pathname === "/codex/"
+      ) {
         return `${parsedUrl.origin}/codex/responses`;
       }
 
-      if (pathOrig === "/codex" || pathOrig === "/codex/") {
-        return `${parsedUrl.origin}/codex/responses`;
-      }
-
-      if (pathOrig.includes("/v1/chat/completions")) {
+      if (pathname.includes("/v1/chat/completions")) {
         return `${parsedUrl.origin}/codex/responses`;
       }
     }
@@ -210,22 +151,35 @@ function normalizeTargetUrl(targetUrl) {
   }
 }
 
+function looksLikeFullEndpoint(urlString) {
+  try {
+    const url = new URL(ensureHttpsUrl(urlString));
+    const p = url.pathname.toLowerCase();
+
+    return (
+      p.endsWith("/chat/completions") ||
+      p.endsWith("/responses") ||
+      p.endsWith("/codex/responses") ||
+      p.endsWith("/messages") ||
+      p.includes("/v1/chat/completions")
+    );
+  } catch {
+    return false;
+  }
+}
+
 function buildTargetUrlFromBody(body) {
-  const explicitTarget = body.apiUrl || body.url || body.targetUrl;
+  const explicit = body.apiUrl || body.url || body.targetUrl;
 
-  if (explicitTarget) {
-    const normalizedExplicit = normalizeTargetUrl(String(explicitTarget));
+  if (explicit) {
+    const normalized = normalizeTargetUrl(String(explicit));
 
-    if (looksLikeFullApiEndpoint(normalizedExplicit)) {
-      return normalizedExplicit;
+    if (looksLikeFullEndpoint(normalized)) {
+      return normalized;
     }
 
-    if (isLikelyBaseUrl(normalizedExplicit)) {
-      const endpoint = normalizeEndpoint(body.endpoint || "/chat/completions");
-      return normalizeTargetUrl(`${normalizeBaseUrl(normalizedExplicit)}${endpoint}`);
-    }
-
-    return normalizedExplicit;
+    const endpoint = normalizeEndpoint(body.endpoint || "/chat/completions");
+    return normalizeTargetUrl(`${normalizeBaseUrl(normalized)}${endpoint}`);
   }
 
   const baseUrl = normalizeBaseUrl(
@@ -237,11 +191,11 @@ function buildTargetUrlFromBody(body) {
 
   const endpoint = normalizeEndpoint(body.endpoint || "/chat/completions");
 
-  if (baseUrl) {
-    if (looksLikeFullApiEndpoint(baseUrl)) {
-      return normalizeTargetUrl(baseUrl);
-    }
+  if (looksLikeFullEndpoint(baseUrl)) {
+    return normalizeTargetUrl(baseUrl);
+  }
 
+  if (baseUrl) {
     return normalizeTargetUrl(`${baseUrl}${endpoint}`);
   }
 
@@ -294,11 +248,10 @@ function hostMatchesAllowed(hostname, allowedHost) {
   const host = hostname.toLowerCase();
   const allowed = allowedHost.toLowerCase();
 
-  if (allowed === host) return true;
+  if (host === allowed) return true;
 
   if (allowed.startsWith("*.")) {
-    const suffix = allowed.slice(1);
-    return host.endsWith(suffix);
+    return host.endsWith(allowed.slice(1));
   }
 
   if (allowed.startsWith(".")) {
@@ -312,17 +265,9 @@ function isAllowedTargetUrl(targetUrl) {
   try {
     const url = new URL(targetUrl);
 
-    if (url.protocol !== "https:") {
-      return false;
-    }
-
-    if (isPrivateOrLocalUrl(targetUrl)) {
-      return false;
-    }
-
-    if (ALLOW_ANY_HTTPS_TARGET) {
-      return true;
-    }
+    if (url.protocol !== "https:") return false;
+    if (isPrivateOrLocalUrl(targetUrl)) return false;
+    if (ALLOW_ANY_HTTPS_TARGET) return true;
 
     return ALLOWED_TARGET_HOSTS.some((allowed) =>
       hostMatchesAllowed(url.hostname, allowed)
@@ -336,82 +281,12 @@ function checkProxyToken(req) {
   if (!PROXY_TOKEN) return true;
 
   const token = req.headers["x-proxy-token"];
-
-  if (Array.isArray(token)) {
-    return token.includes(PROXY_TOKEN);
-  }
-
+  if (Array.isArray(token)) return token.includes(PROXY_TOKEN);
   return token === PROXY_TOKEN;
 }
 
-function buildModelPayload(body) {
-  if (
-    body.body &&
-    typeof body.body === "object" &&
-    !Array.isArray(body.body)
-  ) {
-    return { ...body.body };
-  }
-
-  const finalBody = { ...body };
-
-  delete finalBody.apiUrl;
-  delete finalBody.url;
-  delete finalBody.targetUrl;
-  delete finalBody.baseUrl;
-  delete finalBody.apiBaseUrl;
-  delete finalBody.endpoint;
-  delete finalBody.apiKey;
-  delete finalBody.upstreamApiKey;
-  delete finalBody.cloudBaseUrl;
-  delete finalBody.headers;
-  delete finalBody.body;
-  delete finalBody.proxyToken;
-
-  return finalBody;
-}
-
-function normalizePayloadForTarget(payload, targetUrl) {
-  try {
-    const url = new URL(targetUrl);
-    const hostname = url.hostname.toLowerCase();
-    const pathname = url.pathname.toLowerCase();
-
-    const finalPayload = { ...payload };
-
-    const isResponsesLike =
-      pathname.endsWith("/responses") ||
-      pathname.includes("/codex/responses");
-
-    if (isResponsesLike) {
-      if (finalPayload.messages && !finalPayload.input) {
-        finalPayload.input = finalPayload.messages;
-        delete finalPayload.messages;
-      }
-
-      if (finalPayload.max_tokens && !finalPayload.max_output_tokens) {
-        finalPayload.max_output_tokens = finalPayload.max_tokens;
-        delete finalPayload.max_tokens;
-      }
-    }
-
-    if (
-      hostname === "new.sharedchat.cc" &&
-      pathname.includes("/codex/responses")
-    ) {
-      if (finalPayload.stream === undefined) {
-        finalPayload.stream = false;
-      }
-    }
-
-    return finalPayload;
-  } catch {
-    return payload;
-  }
-}
-
 function buildForwardHeaders(req, body, targetUrl) {
-  const headersToSend = {
+  const headers = {
     "Content-Type": "application/json",
   };
 
@@ -420,12 +295,11 @@ function buildForwardHeaders(req, body, targetUrl) {
       if (!key || value == null) continue;
 
       const lower = key.toLowerCase();
-
       if (HOP_BY_HOP_HEADERS.has(lower)) continue;
       if (lower === "content-type") continue;
       if (lower === "content-length") continue;
 
-      headersToSend[key] = String(value);
+      headers[key] = String(value);
     }
   }
 
@@ -436,7 +310,7 @@ function buildForwardHeaders(req, body, targetUrl) {
     "";
 
   if (authHeader) {
-    headersToSend.Authorization = authHeader;
+    headers.Authorization = authHeader;
   }
 
   const envKey = process.env.UPSTREAM_API_KEY || "";
@@ -448,173 +322,191 @@ function buildForwardHeaders(req, body, targetUrl) {
       const host = new URL(targetUrl).hostname.toLowerCase();
 
       if (host === "api.anthropic.com") {
-        delete headersToSend.Authorization;
+        delete headers.Authorization;
 
-        if (!headersToSend["x-api-key"] && !headersToSend["X-API-Key"]) {
-          headersToSend["x-api-key"] = finalKey;
+        if (!headers["x-api-key"] && !headers["X-API-Key"]) {
+          headers["x-api-key"] = finalKey;
         }
 
-        if (
-          !headersToSend["anthropic-version"] &&
-          !headersToSend["Anthropic-Version"]
-        ) {
-          headersToSend["anthropic-version"] = "2023-06-01";
+        if (!headers["anthropic-version"] && !headers["Anthropic-Version"]) {
+          headers["anthropic-version"] = "2023-06-01";
         }
-      } else if (!headersToSend.Authorization) {
-        headersToSend.Authorization = `Bearer ${finalKey}`;
+      } else if (!headers.Authorization) {
+        headers.Authorization = `Bearer ${finalKey}`;
       }
     } catch {
-      if (!headersToSend.Authorization) {
-        headersToSend.Authorization = `Bearer ${finalKey}`;
+      if (!headers.Authorization) {
+        headers.Authorization = `Bearer ${finalKey}`;
       }
     }
   }
 
-  return headersToSend;
+  return headers;
 }
 
-function isBinaryResponseContentType(contentType, contentDisposition = "") {
-  const ct = String(contentType || "").toLowerCase();
-  const cd = String(contentDisposition || "").toLowerCase();
+function extractTextFromResponse(data) {
+  try {
+    if (typeof data === "string") return data;
 
-  if (cd.includes("attachment") || cd.includes("filename=")) {
-    return true;
-  }
+    const choiceText =
+      data?.choices?.[0]?.message?.content ??
+      data?.choices?.[0]?.text ??
+      data?.output_text ??
+      data?.content?.[0]?.text ??
+      data?.data?.[0]?.text;
 
-  if (!ct) return false;
+    if (typeof choiceText === "string") return choiceText;
 
-  if (ct.startsWith("image/")) return true;
-  if (ct.startsWith("audio/")) return true;
-  if (ct.startsWith("video/")) return true;
-
-  if (ct.includes("application/pdf")) return true;
-  if (ct.includes("application/octet-stream")) return true;
-  if (ct.includes("application/zip")) return true;
-  if (ct.includes("application/x-zip-compressed")) return true;
-  if (ct.includes("application/msword")) return true;
-  if (ct.includes("application/vnd.openxmlformats-officedocument")) return true;
-  if (ct.includes("application/vnd.ms-excel")) return true;
-  if (ct.includes("application/vnd.ms-powerpoint")) return true;
-
-  return false;
-}
-
-function copyUpstreamHeaders(upstreamHeaders, res) {
-  for (const [key, value] of upstreamHeaders.entries()) {
-    const lower = key.toLowerCase();
-
-    if (HOP_BY_HOP_HEADERS.has(lower)) continue;
-    if (lower === "content-length") continue;
-    if (lower === "content-encoding") continue;
-    if (lower.startsWith("access-control-")) continue;
-
-    try {
-      res.setHeader(key, value);
-    } catch {
-      // ignore invalid headers
+    if (Array.isArray(data?.output)) {
+      const parts = [];
+      for (const item of data.output) {
+        if (typeof item?.content === "string") parts.push(item.content);
+        if (Array.isArray(item?.content)) {
+          for (const c of item.content) {
+            if (typeof c?.text === "string") parts.push(c.text);
+          }
+        }
+      }
+      if (parts.length) return parts.join("\n");
     }
+
+    return JSON.stringify(data);
+  } catch {
+    return "";
   }
 }
 
-async function pipeUpstreamBody(upstream, res) {
-  if (!upstream.body) {
-    return res.end();
+function buildCheckPayload(body) {
+  const model = body.model || body.aiModel || body.modelName;
+
+  const prompt =
+    body.prompt ||
+    "只回复 OK，不要输出其他内容。This is a lightweight model check. Reply only OK.";
+
+  const payload = {
+    model,
+    messages: [
+      {
+        role: "user",
+        content: prompt,
+      },
+    ],
+    temperature: 0,
+    max_tokens: 8,
+    stream: false,
+  };
+
+  if (body.max_tokens || body.maxTokens) {
+    payload.max_tokens = Number(body.max_tokens || body.maxTokens) || 8;
   }
 
-  return new Promise((resolve, reject) => {
-    const nodeStream = Readable.fromWeb(upstream.body);
+  return payload;
+}
 
-    nodeStream.on("error", reject);
-    res.on("finish", resolve);
-    res.on("error", reject);
+async function callModelOnce(req, body, targetUrl) {
+  const payload = buildCheckPayload(body);
+  const headers = buildForwardHeaders(req, body, targetUrl);
 
-    nodeStream.pipe(res);
+  const start = Date.now();
+
+  const upstream = await fetch(targetUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
   });
+
+  const elapsedMs = Date.now() - start;
+  const contentType = upstream.headers.get("content-type") || "";
+  const text = await upstream.text();
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = null;
+  }
+
+  const responseText = extractTextFromResponse(parsed || text);
+
+  return {
+    ok: upstream.ok,
+    success: upstream.ok,
+    status: upstream.status,
+    elapsedMs,
+    contentType,
+    responseText,
+    raw: parsed || text.slice(0, 2000),
+  };
 }
 
-async function sendUpstreamResponse(res, upstream, targetUrl) {
-  const contentType =
-    upstream.headers.get("content-type") || "application/octet-stream";
-  const contentTypeLower = contentType.toLowerCase();
-  const contentDisposition = upstream.headers.get("content-disposition") || "";
-  const server = upstream.headers.get("server") || "";
-  const cfRay = upstream.headers.get("cf-ray") || "";
+function scoreModelCheck(result) {
+  let score = 0;
+  const reasons = [];
 
-  res.statusCode = upstream.status;
-  res.setHeader("X-Upstream-Target", targetUrl);
-  res.setHeader("X-Upstream-Status", String(upstream.status));
-
-  if (contentTypeLower.includes("text/html")) {
-    const html = await upstream.text();
-
-    return sendJson(res, upstream.status, {
-      ok: false,
-      success: false,
-      error:
-        "上游返回了 HTML，不是 API JSON/图片/文件。可能是地址错误、鉴权失败或被 WAF 拦截。",
-      upstreamStatus: upstream.status,
-      targetUrl,
-      contentType,
-      server,
-      cfRay,
-      preview: html.slice(0, 1000),
-    });
+  if (result.ok) {
+    score += 50;
+    reasons.push("上游 HTTP 状态正常。");
+  } else {
+    reasons.push(`上游 HTTP 状态异常：${result.status}。`);
   }
 
-  copyUpstreamHeaders(upstream.headers, res);
+  const text = String(result.responseText || "").trim();
 
-  if (contentTypeLower.includes("text/event-stream")) {
-    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("X-Accel-Buffering", "no");
-    return await pipeUpstreamBody(upstream, res);
+  if (text) {
+    score += 25;
+    reasons.push("模型返回了可解析文本。");
+  } else {
+    reasons.push("模型没有返回可解析文本。");
   }
 
-  if (isBinaryResponseContentType(contentType, contentDisposition)) {
-    return await pipeUpstreamBody(upstream, res);
+  if (/ok/i.test(text)) {
+    score += 20;
+    reasons.push("模型按要求返回 OK 或近似结果。");
+  } else if (text.length > 0) {
+    score += 10;
+    reasons.push("模型有输出，但未严格按要求只回复 OK。");
   }
 
-  return await pipeUpstreamBody(upstream, res);
+  if (result.elapsedMs > 0 && result.elapsedMs < 20000) {
+    score += 5;
+    reasons.push("响应耗时在可接受范围内。");
+  }
+
+  score = Math.max(0, Math.min(100, score));
+
+  return {
+    score,
+    level:
+      score >= 90
+        ? "high"
+        : score >= 70
+        ? "medium"
+        : score >= 50
+        ? "low"
+        : "failed",
+    reasons,
+  };
 }
 
-function sendProxyHealth(res) {
+function sendModelCheckHealth(res) {
   return sendJson(res, 200, {
     ok: true,
     success: true,
     status: "ok",
     ready: true,
-    service: "lingche-vercel-ai-proxy",
-    type: "ai-proxy",
-    endpoint: "/api/chat/proxy",
+    service: "lingche-model-check",
+    endpoint: "/api/model-check",
     methods: ["GET", "POST", "OPTIONS", "HEAD"],
     supports: {
-      json: true,
-      sse: true,
-      binaryImage: true,
-      binaryFile: true,
-      base64ImageJson: true,
-      imageUrlJson: true,
-      htmlGuard: true,
-      responsesEndpointNormalize: true,
+      modelCheck: true,
+      fullModelCheck: true,
+      lightweightModelCheck: true,
+      cloudModelCheck: true,
     },
-    supportedRequestForms: [
-      {
-        mode: "full target",
-        example: {
-          apiUrl: "https://api.openai.com/v1/chat/completions",
-        },
-      },
-      {
-        mode: "baseUrl + endpoint",
-        example: {
-          baseUrl: "https://api.openai.com/v1",
-          endpoint: "/chat/completions",
-        },
-      },
+    notes: [
+      "POST this endpoint with apiUrl/baseUrl, model and apiKey to run a small real model check.",
+      "This endpoint may consume a small amount of upstream tokens.",
     ],
-    upstreamDefault: DEFAULT_AI_TARGET,
-    allowedHosts: ALLOWED_TARGET_HOSTS,
-    allowAnyHttpsTarget: ALLOW_ANY_HTTPS_TARGET,
     time: new Date().toISOString(),
   });
 }
@@ -631,14 +523,14 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "GET") {
-    return sendProxyHealth(res);
+    return sendModelCheckHealth(res);
   }
 
   if (req.method !== "POST") {
     return sendJson(res, 405, {
       ok: false,
       success: false,
-      error: "Method Not Allowed. Use POST /api/chat/proxy.",
+      error: "Method Not Allowed. Use POST /api/model-check.",
     });
   }
 
@@ -646,24 +538,22 @@ export default async function handler(req, res) {
     return sendJson(res, 401, {
       ok: false,
       success: false,
-      error: "Invalid proxy token",
+      error: "Invalid proxy token.",
     });
   }
 
   try {
     const body = await readRequestBody(req);
 
-    let targetUrl = buildTargetUrlFromBody(body);
+    const targetUrl = normalizeTargetUrl(buildTargetUrlFromBody(body));
 
     if (!targetUrl) {
       return sendJson(res, 400, {
         ok: false,
         success: false,
-        error: "API地址未填写，请在设置中配置真实 API URL。",
+        error: "API地址未填写，无法进行模型检测。",
       });
     }
-
-    targetUrl = normalizeTargetUrl(targetUrl);
 
     if (!isAllowedTargetUrl(targetUrl)) {
       return sendJson(res, 403, {
@@ -673,30 +563,31 @@ export default async function handler(req, res) {
         targetUrl,
         allowedHosts: ALLOWED_TARGET_HOSTS,
         allowAnyHttpsTarget: ALLOW_ANY_HTTPS_TARGET,
-        hint:
-          "如果你使用第三方中转站，请把它的域名加入 Vercel 环境变量 ALLOWED_TARGET_HOSTS，或临时设置 ALLOW_ANY_HTTPS_TARGET=true。",
       });
     }
 
-    let finalBody = buildModelPayload(body);
-    finalBody = normalizePayloadForTarget(finalBody, targetUrl);
+    const result = await callModelOnce(req, body, targetUrl);
+    const credibility = scoreModelCheck(result);
 
-    const headersToSend = buildForwardHeaders(req, body, targetUrl);
-
-    const upstream = await fetch(targetUrl, {
-      method: "POST",
-      headers: headersToSend,
-      body: JSON.stringify(finalBody),
+    return sendJson(res, result.ok ? 200 : 502, {
+      ok: result.ok,
+      success: result.ok,
+      status: result.status,
+      targetUrl,
+      model: body.model || body.aiModel || body.modelName || null,
+      elapsedMs: result.elapsedMs,
+      responseText: result.responseText,
+      credibility,
+      raw: result.raw,
+      time: new Date().toISOString(),
     });
-
-    return await sendUpstreamResponse(res, upstream, targetUrl);
   } catch (error) {
     return sendJson(res, 500, {
       ok: false,
       success: false,
       error: error?.message || String(error),
       hint:
-        "请检查真实 API URL、API Key、模型名、Vercel 环境变量、以及 Cloudflare Worker 是否正确转发到 Vercel。",
+        "完整模型检测失败。请检查真实 API URL、API Key、模型名、Vercel 环境变量和上游服务状态。",
     });
   }
 }
