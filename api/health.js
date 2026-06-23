@@ -1,11 +1,31 @@
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS,HEAD");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type,Authorization,X-Requested-With"
+    [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "X-Proxy-Token",
+      "X-API-Key",
+      "x-api-key"
+    ].join(", ")
+  );
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    [
+      "X-Selfhost-Proxy",
+      "X-Proxy-Mode",
+      "X-Proxy-Version",
+      "X-Upstream-Status",
+      "X-Upstream-Target"
+    ].join(", ")
   );
   res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Selfhost-Proxy", "true");
+  res.setHeader("X-Proxy-Mode", "vercel-backend");
+  res.setHeader("X-Proxy-Version", "lingche-backend-v10-health");
 }
 
 function normalizeBaseUrl(input) {
@@ -19,12 +39,16 @@ export default function handler(req, res) {
     return res.status(204).end();
   }
 
+  if (req.method === "HEAD") {
+    return res.status(200).end();
+  }
+
   if (req.method !== "GET") {
     return res.status(405).json({
       ok: false,
       success: false,
       error: "Method Not Allowed",
-      allow: ["GET", "OPTIONS"],
+      allow: ["GET", "HEAD", "OPTIONS"],
     });
   }
 
@@ -41,11 +65,19 @@ export default function handler(req, res) {
     status: "ok",
     ready: true,
 
-    service: "selfhost-cloud-backend",
-    projectType: "base-extract-backend",
-    version: "selfhost-base-v2-health-stable",
+    service: "lingche-vercel-backend",
+    projectType: "ai-cloud-proxy-and-file-backend",
+    version: "lingche-v10-health-stable",
     runtime: "vercel-serverless",
     time: new Date().toISOString(),
+
+    chain: {
+      app: "Android App",
+      publicGateway: "https://feiling.ccwu.cc",
+      gatewayLayer: "Cloudflare Worker",
+      backendLayer: "Vercel",
+      upstream: "Real AI API"
+    },
 
     capabilities: {
       health: true,
@@ -54,8 +86,15 @@ export default function handler(req, res) {
       renderParse: hasDeepBackend,
       modelCheck: enableModelCheck,
 
-      // 现在还没加 /api/file/parse，所以这里先写 false
-      fileParse: true
+      fileParse: true,
+      fileContentProxy: true,
+
+      sse: true,
+      binaryImage: true,
+      binaryFile: true,
+      base64Image: true,
+      imageUrl: true,
+      fileIdProxy: true
     },
 
     endpoints: {
@@ -64,9 +103,8 @@ export default function handler(req, res) {
       parse: "/api/parse",
       renderParse: hasDeepBackend ? "/api/render-parse" : null,
       modelCheck: enableModelCheck ? "/api/model-check" : null,
-
-      // 现在还没加接口，所以这里先写 null
-      fileParse: "/api/file/parse"
+      fileParse: "/api/file/parse",
+      fileContentProxy: "/api/file-content-proxy"
     },
 
     routes: {
@@ -76,6 +114,7 @@ export default function handler(req, res) {
       renderParse: hasDeepBackend ? "/api/render-parse" : null,
       modelCheck: enableModelCheck ? "/api/model-check" : null,
       fileParse: "/api/file/parse",
+      fileContentProxy: "/api/file-content-proxy"
     },
 
     deepBackend: {
@@ -83,10 +122,13 @@ export default function handler(req, res) {
       baseUrl: hasDeepBackend ? deepParseBaseUrl : null,
       note: hasDeepBackend
         ? "Deep parse requests are forwarded to the configured deep backend."
-        : "DEEP_PARSE_BASE_URL is not configured, so deep parse is unavailable.",
+        : "DEEP_PARSE_BASE_URL is not configured, so deep render parse is unavailable."
     },
 
-    warning:
-      "This is a self-hosted backend. File parse is not enabled in this deployment yet.",
+    notes: [
+      "App should use https://feiling.ccwu.cc as the cloud backend address.",
+      "Cloudflare Worker should forward /api/* requests to this Vercel backend.",
+      "This health endpoint only proves the Vercel backend is alive after the request reaches it."
+    ]
   });
 }
