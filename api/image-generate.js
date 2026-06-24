@@ -272,9 +272,19 @@ export default async function handler(req, res) {
     });
 
     const contentType = upstream.headers.get("content-type") || "";
-    res.setHeader("X-Upstream-Target", targetUrl);
+    res.setHeader("X-Upstream-Target", encodeURIComponent(targetUrl).slice(0, 1000));
     res.setHeader("X-Upstream-Status", String(upstream.status));
 
+    function safeHeaderValue(value) {
+
+      return encodeURIComponent(
+    String(value || "")
+      .replace(/[\r\n\t]+/g, " ")
+      .trim()
+
+      ).slice(0, 1000);
+
+    }
     if (contentType.toLowerCase().startsWith("image/")) {
       const buffer = Buffer.from(await upstream.arrayBuffer());
       res.status(upstream.status);
