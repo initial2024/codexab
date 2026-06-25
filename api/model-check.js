@@ -5,6 +5,10 @@ export const config = {
   },
 };
 
+const MODEL_CHECK_VERSION = "provider-aware-v3-debug-final-v42-compatible";
+const BACKEND_VERSION = "v42-compatible-model-check";
+const FRONTEND_TARGET = "4.2.0+";
+
 const DEFAULT_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 60000);
 
 const ALLOW_ANY_HTTPS_TARGET =
@@ -33,10 +37,27 @@ const ALLOWED_TARGET_HOSTS = (
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    [
+      "Content-Type",
+      "Authorization",
+      "X-API-Key",
+      "X-Request-ID",
+      "X-Lingche-Client",
+      "X-Lingche-Experiment",
+      "X-Requested-With",
+    ].join(",")
+  );
+  res.setHeader("Access-Control-Expose-Headers", [
+    "X-Selfhost-Model-Check",
+    "X-Model-Check-Version",
+    "X-Lingche-Backend-Version",
+  ].join(","));
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Selfhost-Model-Check", "true");
-  res.setHeader("X-Model-Check-Version", "provider-aware-v3-debug-final");
+  res.setHeader("X-Model-Check-Version", MODEL_CHECK_VERSION);
+  res.setHeader("X-Lingche-Backend-Version", BACKEND_VERSION);
 }
 
 function sendJson(res, statusCode, data) {
@@ -1155,13 +1176,37 @@ export default async function handler(req, res) {
     return sendJson(res, 200, {
       ok: true,
       service: "model-check",
-      version: "provider-aware-v3-debug-final",
+      version: MODEL_CHECK_VERSION,
+      backendVersion: BACKEND_VERSION,
+      frontendTarget: FRONTEND_TARGET,
       levels: ["light", "standard", "deep"],
       defaultLevel: "light",
+      capabilities: {
+        modelCheck: true,
+        providerAware: true,
+        lightStandardDeep: true,
+        modelsEndpointProbe: true,
+        shortChatProbe: true,
+        streamProbe: true,
+        jsonModeProbe: true,
+        toolsProbe: true,
+        longOutputProbe: true,
+        usageDetection: true,
+        providerInference: true,
+        apiKeyMasking: true,
+        requestDebug: true,
+        tokenCostWarning: true,
+      },
       rules: {
         light: "GET /models + POST /chat/completions only",
         standard: "GET /models + shortChat + stream + JSON mode + tools",
         deep: "standard checks + long output probe",
+      },
+      security: {
+        allowAnyHttpsTarget: ALLOW_ANY_HTTPS_TARGET,
+        allowedHosts: ALLOWED_TARGET_HOSTS,
+        localNetworkBlocked: true,
+        privateIpBlocked: true,
       },
       warning:
         "模型检测会发起真实模型请求，可能消耗 token、余额或中转站额度。检测结果仅供参考，不能作为模型来源的绝对证明。",
@@ -1268,7 +1313,9 @@ export default async function handler(req, res) {
     return sendJson(res, 200, {
       ok: true,
       service: "model-check",
-      version: "provider-aware-v3-debug-final",
+      version: MODEL_CHECK_VERSION,
+      backendVersion: BACKEND_VERSION,
+      frontendTarget: FRONTEND_TARGET,
       level,
       requestDebug: debugInfo,
       target: {
@@ -1302,4 +1349,4 @@ export default async function handler(req, res) {
         "检测失败不一定代表模型不可用，也可能是 Base URL、API Key、模型名、网络、白名单或中转站兼容性问题。",
     });
   }
-      }
+}
