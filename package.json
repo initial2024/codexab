@@ -1,20 +1,13 @@
 {
-  "name": "lingche-v9-vercel-backend",
+  "name": "lingche-v-backend",
+  "version": "42.0.0",
   "private": true,
-  "version": "9.0.0",
   "type": "module",
   "scripts": {
     "dev": "vercel dev",
-    "start": "node -e \"console.log('Deploy this folder to Vercel. API routes are under /api.')\""
+    "check": "node --check api/health.js && node --check api/media-content-proxy.js && node --check api/video-preview.js && node --check api/parse.js && node --check api/render-parse.js && node --check api/file/parse.js && node --check api/model-check.js && node --check api/header-echo.js && node --check api/request-echo.js"
   },
-  "dependencies": {
-    "@vercel/analytics": "^1.4.1",
-    "mammoth": "^1.12.0",
-    "multiparty": "^4.3.0",
-    "pdf-parse-new": "^2.1.0",
-    "xlsx": "^0.18.5"
-  },
-  "devDependencies": {
-    "vercel": "^48.2.9"
+  "engines": {
+    "node": ">=20"
   }
 }
