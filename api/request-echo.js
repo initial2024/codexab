@@ -7,14 +7,23 @@ import {
   normalizeUrl,
 } from "./_utils.js";
 
+export const config = {
+  api: {
+    bodyParser: true,
+    responseLimit: false,
+  },
+};
+
 export default async function handler(req, res) {
   if (handleOptions(req, res)) return;
 
   const body = req.method === "POST" ? await readBody(req) : {};
+
   const generatedHeaders = randomizedHeaders(body.extraHeaders || {});
 
   const result = {
     ok: true,
+    success: true,
     endpoint: "/api/request-echo",
     serverTime: new Date().toISOString(),
     clientIpSeenByVercel: clientIp(req),
@@ -22,7 +31,7 @@ export default async function handler(req, res) {
     verification: {
       attempted: false,
       success: false,
-      message: "未填写 echoUrl 或未确认 confirm=true，因此未发起外部验证请求。",
+      message: "未填写 echoUrl 或 confirm=true，因此没有发起外部验证请求。",
     },
   };
 
@@ -36,9 +45,11 @@ export default async function handler(req, res) {
         headers: generatedHeaders,
       });
 
+      const contentType = upstream.headers.get("content-type") || "";
       const raw = await upstream.text();
 
       let parsed = null;
+
       try {
         parsed = JSON.parse(raw);
       } catch {}
@@ -48,7 +59,7 @@ export default async function handler(req, res) {
         success: upstream.ok,
         status: upstream.status,
         durationMs: Date.now() - started,
-        responseContentType: upstream.headers.get("content-type") || "",
+        responseContentType: contentType,
         responsePreview: raw.slice(0, 2000),
         parsedJson: parsed,
         possibleEgressIp:
@@ -58,14 +69,14 @@ export default async function handler(req, res) {
           parsed?.client_ip ||
           "无法确认",
       };
-    } catch (err) {
+    } catch (error) {
       result.verification = {
         attempted: true,
         success: false,
-        message: err?.message || String(err),
+        message: String(error?.message || error),
       };
     }
   }
 
-  sendJson(res, result);
+  return sendJson(res, result);
 }
