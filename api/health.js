@@ -5,8 +5,8 @@ export const config = {
   },
 };
 
-const HEALTH_VERSION = "lingche-health-v42-hobby-safe-from-v34.2";
-const FRONTEND_TARGET = "4.2.0+";
+const HEALTH_VERSION = "lingche-health-v42.6-hobby-safe-from-v34.2";
+const FRONTEND_TARGET = "4.2.6+";
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -100,7 +100,14 @@ export default function handler(req, res) {
     process.env.DEEP_PARSE_BASE_URL || ""
   );
 
+  const companionWOrigin = normalizeBaseUrl(
+    process.env.PUBLIC_GATEWAY_ORIGIN ||
+      process.env.W_BACKEND_ORIGIN ||
+      ""
+  );
+
   const hasDeepBackend = Boolean(deepParseBaseUrl);
+  const hasCompanionW = Boolean(companionWOrigin);
 
   const allowAnyHttpsTarget = boolEnv("ALLOW_ANY_HTTPS_TARGET", false);
   const allowAnyHttpsMedia = boolEnv("ALLOW_ANY_HTTPS_MEDIA", false);
@@ -114,23 +121,28 @@ export default function handler(req, res) {
   const enableVideoGenerate = boolEnv("ENABLE_VIDEO_GENERATE", true);
   const enableTaskApi = boolEnv("ENABLE_TASK_API", true);
 
-  /**
-   * Vercel Hobby 最多 12 个 Serverless Functions。
-   * 所以这里不再声明独立的：
-   * - /api/video-preview
-   * - /api/file-content-proxy
-   * - /api/render-parse
-   *
-   * 视频预览、文件代理、媒体下载统一走：
-   * - /api/media-content-proxy
-   *
-   * 深度解析如果存在，走外部 DEEP_PARSE_BASE_URL，不在当前普通 V 项目里新增函数。
-   */
   const mediaProxyEndpoint = "/api/media-content-proxy";
+
+  const wEndpoints = {
+    multimediaProxy: "/api/multimedia/proxy",
+    multimediaTest: "/api/multimedia/test",
+    genericApiProxy: "/api/generic-api/proxy",
+
+    imageGenerate: "/api/image-generate",
+    videoGenerate: "/api/video-generate",
+    audioGenerate: "/api/audio-generate",
+
+    repairProxy: "/api/repair/proxy",
+    repairTest: "/api/repair/test",
+    repairTaskQuery: "/api/repair/task-query",
+    repairResultQuery: "/api/repair/result-query",
+  };
 
   const capabilities = {
     health: true,
     tokenFreeHealthCheck: true,
+
+    role: "V_PARSE_MEDIA_DOWNLOAD",
 
     chatProxy: true,
     aiProxy: true,
@@ -155,8 +167,6 @@ export default function handler(req, res) {
     renderParse: false,
     renderParseFallback: true,
     deepParse: hasDeepBackend,
-
-    role: "V_PARSE_MEDIA",
 
     sse: true,
     binaryImage: true,
@@ -186,6 +196,33 @@ export default function handler(req, res) {
     backgroundTask: enableTaskApi,
     resumableTask: enableTaskApi,
     cancellableTask: enableTaskApi,
+
+    multimediaConfigWizard: true,
+    multimediaTemplateConfig: true,
+    multimediaDocParseConfig: true,
+    multimediaStaticConfigCheck: true,
+
+    multimediaRealConfigTestViaW: true,
+    genericMultimediaProxyViaW: true,
+
+    imageGenerationProxyViaW: true,
+    videoGenerationProxyViaW: true,
+    audioGenerationProxyViaW: true,
+
+    repairModelConfig: true,
+    repairModelIndependent: true,
+    repairConfigWizard: true,
+    repairRealConfigTestViaW: true,
+    repairProxyViaW: true,
+    repairTaskQueryViaW: true,
+    repairResultQueryViaW: true,
+
+    localRepairProxy: false,
+    localGenericMultimediaProxy: false,
+
+    downloadCenterRepair: true,
+    localLightRepairPlan: true,
+    aiRepairAnalysis: true,
   };
 
   const endpoints = {
@@ -227,6 +264,31 @@ export default function handler(req, res) {
 
     taskStatus: enableTaskApi ? "/api/task-status" : null,
     taskCancel: enableTaskApi ? "/api/task-cancel" : null,
+
+    multimediaProxy: null,
+    multimediaTest: null,
+    genericApiProxy: null,
+
+    repairProxy: null,
+    repairTest: null,
+    repairTaskQuery: null,
+    repairResultQuery: null,
+
+    companionWOrigin: hasCompanionW ? companionWOrigin : null,
+    companionWEndpoints: wEndpoints,
+
+    wMultimediaProxy: wEndpoints.multimediaProxy,
+    wMultimediaTest: wEndpoints.multimediaTest,
+    wGenericApiProxy: wEndpoints.genericApiProxy,
+
+    wImageGenerate: wEndpoints.imageGenerate,
+    wVideoGenerate: wEndpoints.videoGenerate,
+    wAudioGenerate: wEndpoints.audioGenerate,
+
+    wRepairProxy: wEndpoints.repairProxy,
+    wRepairTest: wEndpoints.repairTest,
+    wRepairTaskQuery: wEndpoints.repairTaskQuery,
+    wRepairResultQuery: wEndpoints.repairResultQuery,
   };
 
   const activeFunctionBudget = {
@@ -251,7 +313,16 @@ export default function handler(req, res) {
       "api/file-content-proxy.js",
       "api/render-parse.js",
       "api/_utils.js",
+      "api/multimedia/proxy.js",
+      "api/repair/proxy.js",
+      "api/audio-generate.js",
+      "api/image-repair.js",
+      "api/video-repair.js",
+      "api/audio-repair.js",
+      "api/file-repair.js",
     ],
+    v42_6Rule:
+      "V42.6 multimedia/repair real proxy should be handled by Cloudflare Worker, not by adding more Vercel functions.",
   };
 
   return res.status(200).json({
@@ -262,7 +333,7 @@ export default function handler(req, res) {
 
     service: "lingche-vercel-backend",
     name: "lingche-v-backend",
-    projectType: "ai-cloud-proxy-file-media-task-backend",
+    projectType: "file-parse-media-download-backend",
 
     version: HEALTH_VERSION,
     backendVersion: HEALTH_VERSION,
@@ -287,6 +358,7 @@ export default function handler(req, res) {
 
     parse: capabilities.parse,
     fileParse: capabilities.fileParse,
+
     fileContentProxy: capabilities.fileContentProxy,
     fileContentProxyViaMediaProxy: capabilities.fileContentProxyViaMediaProxy,
 
@@ -315,6 +387,16 @@ export default function handler(req, res) {
     resumableTask: capabilities.resumableTask,
     cancellableTask: capabilities.cancellableTask,
 
+    multimediaConfigWizard: capabilities.multimediaConfigWizard,
+    multimediaStaticConfigCheck: capabilities.multimediaStaticConfigCheck,
+    multimediaRealConfigTestViaW: capabilities.multimediaRealConfigTestViaW,
+    genericMultimediaProxyViaW: capabilities.genericMultimediaProxyViaW,
+
+    repairModelConfig: capabilities.repairModelConfig,
+    repairModelIndependent: capabilities.repairModelIndependent,
+    repairProxyViaW: capabilities.repairProxyViaW,
+    repairTaskQueryViaW: capabilities.repairTaskQueryViaW,
+
     ipVisibleToVercel: clientIp(req),
 
     capabilities,
@@ -334,13 +416,16 @@ export default function handler(req, res) {
 
     chain: {
       app: "Android App",
-      publicGateway: "https://feiling.ccwu.cc",
+      publicGateway: hasCompanionW ? companionWOrigin : "Cloudflare Worker / W backend",
       gatewayLayer: "Cloudflare Worker",
       backendLayer: "Vercel",
-      upstream: "Real AI API / Media CDN",
+      upstream: "Real AI API / Media CDN / Repair API",
     },
 
     envHints: {
+      companionWOrigin: hasCompanionW ? companionWOrigin : null,
+      hasCompanionW,
+
       deepParseBaseUrl: hasDeepBackend ? deepParseBaseUrl : null,
       hasDeepParseBaseUrl: hasDeepBackend,
 
@@ -360,6 +445,8 @@ export default function handler(req, res) {
     },
 
     env: {
+      hasCompanionW,
+
       hasDeepParseBaseUrl: hasDeepBackend,
 
       hasAllowedTargetHosts: Boolean(process.env.ALLOWED_TARGET_HOSTS),
@@ -378,24 +465,18 @@ export default function handler(req, res) {
     },
 
     notes: [
-      "This health endpoint is upgraded from V34.2 media-compatible backend.",
+      "This health endpoint is upgraded from V34.2 media-compatible backend to V42.6 declaration.",
       "This file is self-contained and does not import _utils.js.",
-      "This version is Vercel Hobby safe: no extra video-preview/file-content-proxy/render-parse functions are required.",
-      "chatProxy remains at /api/chat/proxy.",
-      "modelCheck remains at /api/model-check.",
-      "headerEcho is available at /api/header-echo.",
-      "requestEcho is available at /api/request-echo.",
-      "parse remains at /api/parse.",
-      "fileParse remains at /api/file/parse.",
-      "mediaContentProxy remains at /api/media-content-proxy.",
+      "This version is Vercel Hobby safe: no extra video-preview/file-content-proxy/render-parse/multimedia/repair functions are required.",
+      "V backend handles parse, fileParse, mediaContentProxy, download preview and Range transport.",
+      "W backend handles chat proxy, model check, multimedia config real test, generic multimedia proxy and repair proxy.",
       "videoPreview is handled by /api/media-content-proxy.",
       "fileContentProxy is handled by /api/media-content-proxy.",
-      "Range transport and 206 Partial Content are declared for media proxy support.",
       "local renderParse function is disabled to avoid exceeding Vercel Hobby function limit.",
       "If deep parse is needed, configure DEEP_PARSE_BASE_URL as an external deep backend.",
-      "imageGenerate/videoGenerate/task APIs are declared according to ENABLE_IMAGE_GENERATE, ENABLE_VIDEO_GENERATE and ENABLE_TASK_API.",
-      "Background execution itself is mainly handled by Android Foreground Service / WorkManager.",
-      "For large videos, prefer video_url/download_url and media-content-proxy Range transport.",
+      "V42.6 multimedia and repair proxy should use Cloudflare Worker routes such as /api/multimedia/proxy and /api/repair/proxy.",
+      "Repair model configuration is independent from chat model configuration.",
+      "Static config wizard does not consume quota; real config test should be confirmed by the user because it may consume token or API quota.",
     ],
   });
 }
