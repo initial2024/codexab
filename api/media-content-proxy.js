@@ -1,3 +1,5 @@
+import { Readable } from "node:stream";
+
 export const config = {
   api: {
     bodyParser: false,
@@ -5,7 +7,7 @@ export const config = {
   },
 };
 
-const PROXY_VERSION = "lingche-media-content-proxy-v42-compatible-from-v34.2";
+const PROXY_VERSION = "lingche-media-content-proxy-v42-hobby-safe-from-v34.2";
 
 const DEFAULT_ALLOWED_MEDIA_HOSTS = [
   "integrate.api.nvidia.com",
@@ -91,6 +93,32 @@ function sendJson(res, statusCode, data) {
   res.statusCode = statusCode;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   return res.end(JSON.stringify(data, null, 2));
+}
+
+function safeJsonParse(value, fallback = {}) {
+  if (!value) return fallback;
+  if (typeof value === "object") return value;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+async function readRequestBody(req) {
+  try {
+    const chunks = [];
+
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+
+    const raw = Buffer.concat(chunks).toString("utf8");
+    return safeJsonParse(raw, {});
+  } catch {
+    return {};
+  }
 }
 
 function ensureUrl(input) {
@@ -188,34 +216,6 @@ function isAllowedMediaUrl(targetUrl) {
   }
 }
 
-function safeJsonParse(value, fallback = {}) {
-  if (!value) return fallback;
-  if (typeof value === "object") return value;
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
-}
-
-async function readRequestBody(req) {
-  if (req.body) return safeJsonParse(req.body, {});
-
-  try {
-    const chunks = [];
-
-    for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-
-    const raw = Buffer.concat(chunks).toString("utf8");
-    return safeJsonParse(raw, {});
-  } catch {
-    return {};
-  }
-}
-
 function getTargetUrlFromQuery(req) {
   const rawUrl = req.url || "";
   const base = `https://${req.headers.host || "localhost"}`;
@@ -263,20 +263,16 @@ function buildForwardHeaders(req, body = {}) {
 
   const userAgent = req.headers["user-agent"];
 
-  if (userAgent) {
-    headers["User-Agent"] = Array.isArray(userAgent)
-      ? userAgent[0]
-      : userAgent;
-  } else {
-    headers["User-Agent"] = "Lingche-Media-Proxy/42";
-  }
+  headers["User-Agent"] = Array.isArray(userAgent)
+    ? userAgent[0]
+    : userAgent || "Lingche-Media-Proxy/42";
 
   headers.Accept = req.headers.accept || "*/*";
 
-  if (req.headers.referer) {
-    headers.Referer = Array.isArray(req.headers.referer)
-      ? req.headers.referer[0]
-      : req.headers.referer;
+  const referer = req.headers.referer || req.headers.referrer;
+
+  if (referer) {
+    headers.Referer = Array.isArray(referer) ? referer[0] : referer;
   }
 
   if (body.headers && typeof body.headers === "object") {
@@ -325,7 +321,7 @@ function copyResponseHeaders(upstream, res) {
     try {
       res.setHeader(key, value);
     } catch {
-      // ignore invalid header
+      // 忽略非法响应头
     }
   }
 }
@@ -351,6 +347,8 @@ function sendHealth(res) {
       authForward: true,
       binaryStream: true,
       htmlGuard: true,
+      videoPreviewViaMediaProxy: true,
+      fileContentProxyViaMediaProxy: true,
     },
     usage: {
       get: "/api/media-content-proxy?url=https%3A%2F%2Fexample.com%2Fvideo.mp4",
@@ -366,6 +364,27 @@ function sendHealth(res) {
     allowHttpMedia: ALLOW_HTTP_MEDIA,
     time: new Date().toISOString(),
   });
+}
+
+async function pipeUpstreamBody(upstream, res) {
+  if (!upstream.body) {
+    return res.end();
+  }
+
+  if (Readable.fromWeb) {
+    return new Promise((resolve, reject) => {
+      const nodeStream = Readable.fromWeb(upstream.body);
+
+      nodeStream.on("error", reject);
+      res.on("finish", resolve);
+      res.on("error", reject);
+
+      nodeStream.pipe(res);
+    });
+  }
+
+  const arrayBuffer = await upstream.arrayBuffer();
+  return res.end(Buffer.from(arrayBuffer));
 }
 
 export default async function handler(req, res) {
@@ -395,7 +414,9 @@ export default async function handler(req, res) {
     const body = req.method === "POST" ? await readRequestBody(req) : {};
 
     const rawTarget =
-      req.method === "POST" ? pickTargetFromBody(body) : getTargetUrlFromQuery(req);
+      req.method === "POST"
+        ? pickTargetFromBody(body)
+        : getTargetUrlFromQuery(req);
 
     const targetUrl = ensureUrl(rawTarget);
 
@@ -437,7 +458,7 @@ export default async function handler(req, res) {
       const preview =
         req.method === "HEAD" ? "" : (await upstream.text()).slice(0, 1000);
 
-      return sendJson(res, upstream.status, {
+      return sendJson(res, upstream.status || 502, {
         ok: false,
         success: false,
         error:
@@ -453,6 +474,7 @@ export default async function handler(req, res) {
 
     setCors(res);
     res.status(upstream.status);
+
     res.setHeader("X-Upstream-Target", targetUrl);
     res.setHeader("X-Upstream-Status", String(upstream.status));
     res.setHeader("X-Lingche-Duration-Ms", String(Date.now() - started));
@@ -464,8 +486,7 @@ export default async function handler(req, res) {
       return res.end();
     }
 
-    const arrayBuffer = await upstream.arrayBuffer();
-    return res.end(Buffer.from(arrayBuffer));
+    return await pipeUpstreamBody(upstream, res);
   } catch (error) {
     return sendJson(res, 500, {
       ok: false,
