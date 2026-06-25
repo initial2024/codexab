@@ -1,11 +1,11 @@
 {
   "name": "lingche-v-backend",
-  "version": "42.0.0",
+  "version": "46.7.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vercel dev",
-    "check": "node --check api/health.js && node --check api/media-content-proxy.js && node --check api/video-preview.js && node --check api/parse.js && node --check api/render-parse.js && node --check api/file/parse.js && node --check api/model-check.js && node --check api/header-echo.js && node --check api/request-echo.js"
+    "check": "node --check api/health.js && node --check api/media-content-proxy.js && node --check api/parse.js && node --check api/file/parse.js && node --check api/model-check.js && node --check api/header-echo.js && node --check api/request-echo.js && node --check api/image-generate.js && node --check api/video-generate.js && node --check api/task-status.js && node --check api/task-cancel.js"
   },
   "engines": {
     "node": ">=20"
