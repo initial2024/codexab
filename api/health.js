@@ -5,7 +5,7 @@ export const config = {
   },
 };
 
-const HEALTH_VERSION = "lingche-health-v42-compatible-from-v34.2";
+const HEALTH_VERSION = "lingche-health-v42-hobby-safe-from-v34.2";
 const FRONTEND_TARGET = "4.2.0+";
 
 function setCors(res) {
@@ -114,6 +114,20 @@ export default function handler(req, res) {
   const enableVideoGenerate = boolEnv("ENABLE_VIDEO_GENERATE", true);
   const enableTaskApi = boolEnv("ENABLE_TASK_API", true);
 
+  /**
+   * Vercel Hobby 最多 12 个 Serverless Functions。
+   * 所以这里不再声明独立的：
+   * - /api/video-preview
+   * - /api/file-content-proxy
+   * - /api/render-parse
+   *
+   * 视频预览、文件代理、媒体下载统一走：
+   * - /api/media-content-proxy
+   *
+   * 深度解析如果存在，走外部 DEEP_PARSE_BASE_URL，不在当前普通 V 项目里新增函数。
+   */
+  const mediaProxyEndpoint = "/api/media-content-proxy";
+
   const capabilities = {
     health: true,
     tokenFreeHealthCheck: true,
@@ -134,9 +148,11 @@ export default function handler(req, res) {
     parse: true,
     urlParse: true,
     fileParse: true,
-    fileContentProxy: true,
 
-    renderParse: hasDeepBackend,
+    fileContentProxy: true,
+    fileContentProxyViaMediaProxy: true,
+
+    renderParse: false,
     renderParseFallback: true,
     deepParse: hasDeepBackend,
 
@@ -153,6 +169,7 @@ export default function handler(req, res) {
     mediaProxy: true,
     videoProxy: true,
     videoPreview: true,
+    videoPreviewViaMediaProxy: true,
 
     videoTransport: true,
     imageTransport: true,
@@ -187,21 +204,54 @@ export default function handler(req, res) {
 
     parse: "/api/parse",
     fileParse: "/api/file/parse",
-    fileContentProxy: "/api/file-content-proxy",
 
-    renderParse: hasDeepBackend ? "/api/render-parse" : null,
+    fileContentProxy: mediaProxyEndpoint,
+    fileContentProxyNote:
+      "Hobby-safe: fileContentProxy is handled by /api/media-content-proxy.",
+
+    renderParse: null,
+    renderParseNote:
+      "Hobby-safe: no local /api/render-parse function. Use DEEP_PARSE_BASE_URL if deep parse is needed.",
+
     deepParse: hasDeepBackend ? deepParseBaseUrl : null,
 
-    mediaContentProxy: "/api/media-content-proxy",
-    mediaProxy: "/api/media-content-proxy",
-    videoProxy: "/api/media-content-proxy",
-    videoPreview: "/api/video-preview",
+    mediaContentProxy: mediaProxyEndpoint,
+    mediaProxy: mediaProxyEndpoint,
+    videoProxy: mediaProxyEndpoint,
+    videoPreview: mediaProxyEndpoint,
+    videoPreviewNote:
+      "Hobby-safe: videoPreview is handled by /api/media-content-proxy.",
 
     imageGenerate: enableImageGenerate ? "/api/image-generate" : null,
     videoGenerate: enableVideoGenerate ? "/api/video-generate" : null,
 
     taskStatus: enableTaskApi ? "/api/task-status" : null,
     taskCancel: enableTaskApi ? "/api/task-cancel" : null,
+  };
+
+  const activeFunctionBudget = {
+    plan: "Vercel Hobby",
+    maxServerlessFunctions: 12,
+    recommendedFunctions: [
+      "api/health.js",
+      "api/chat/proxy.js",
+      "api/model-check.js",
+      "api/parse.js",
+      "api/file/parse.js",
+      "api/media-content-proxy.js",
+      "api/image-generate.js",
+      "api/video-generate.js",
+      "api/task-status.js",
+      "api/task-cancel.js",
+      "api/header-echo.js",
+      "api/request-echo.js",
+    ],
+    shouldNotCreateInThisProject: [
+      "api/video-preview.js",
+      "api/file-content-proxy.js",
+      "api/render-parse.js",
+      "api/_utils.js",
+    ],
   };
 
   return res.status(200).json({
@@ -238,12 +288,16 @@ export default function handler(req, res) {
     parse: capabilities.parse,
     fileParse: capabilities.fileParse,
     fileContentProxy: capabilities.fileContentProxy,
+    fileContentProxyViaMediaProxy: capabilities.fileContentProxyViaMediaProxy,
+
     renderParse: capabilities.renderParse,
+    deepParse: capabilities.deepParse,
 
     mediaContentProxy: capabilities.mediaContentProxy,
     mediaProxy: capabilities.mediaProxy,
     videoProxy: capabilities.videoProxy,
     videoPreview: capabilities.videoPreview,
+    videoPreviewViaMediaProxy: capabilities.videoPreviewViaMediaProxy,
 
     videoTransport: capabilities.videoTransport,
     imageTransport: capabilities.imageTransport,
@@ -275,6 +329,8 @@ export default function handler(req, res) {
       ...endpoints,
       tokenFreeHealthCheck: true,
     },
+
+    functionBudget: activeFunctionBudget,
 
     chain: {
       app: "Android App",
@@ -324,6 +380,7 @@ export default function handler(req, res) {
     notes: [
       "This health endpoint is upgraded from V34.2 media-compatible backend.",
       "This file is self-contained and does not import _utils.js.",
+      "This version is Vercel Hobby safe: no extra video-preview/file-content-proxy/render-parse functions are required.",
       "chatProxy remains at /api/chat/proxy.",
       "modelCheck remains at /api/model-check.",
       "headerEcho is available at /api/header-echo.",
@@ -331,9 +388,11 @@ export default function handler(req, res) {
       "parse remains at /api/parse.",
       "fileParse remains at /api/file/parse.",
       "mediaContentProxy remains at /api/media-content-proxy.",
-      "videoPreview is available at /api/video-preview.",
+      "videoPreview is handled by /api/media-content-proxy.",
+      "fileContentProxy is handled by /api/media-content-proxy.",
       "Range transport and 206 Partial Content are declared for media proxy support.",
-      "renderParse is only true when DEEP_PARSE_BASE_URL is configured.",
+      "local renderParse function is disabled to avoid exceeding Vercel Hobby function limit.",
+      "If deep parse is needed, configure DEEP_PARSE_BASE_URL as an external deep backend.",
       "imageGenerate/videoGenerate/task APIs are declared according to ENABLE_IMAGE_GENERATE, ENABLE_VIDEO_GENERATE and ENABLE_TASK_API.",
       "Background execution itself is mainly handled by Android Foreground Service / WorkManager.",
       "For large videos, prefer video_url/download_url and media-content-proxy Range transport.",
