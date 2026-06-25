@@ -1,160 +1,342 @@
-export const BACKEND_VERSION = "v42-compatible-final-v";
-export const FRONTEND_TARGET = "4.2.0+";
+export const config = {
+  api: {
+    bodyParser: false,
+    responseLimit: false,
+  },
+};
 
-export function cors(res, extra = {}) {
+const HEALTH_VERSION = "lingche-health-v42-compatible-from-v34.2";
+const FRONTEND_TARGET = "4.2.0+";
+
+function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,HEAD,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-API-Key, X-Request-ID, Range, X-Lingche-Client, X-Lingche-Experiment",
+    [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "X-Proxy-Token",
+      "X-API-Key",
+      "x-api-key",
+      "X-Request-ID",
+      "X-Lingche-Client",
+      "X-Lingche-Experiment",
+      "Range",
+      "If-Range",
+    ].join(", ")
   );
   res.setHeader(
     "Access-Control-Expose-Headers",
-    "Content-Type, Content-Length, Content-Range, Accept-Ranges, X-Lingche-Duration-Ms, X-Lingche-Proxy-Status",
+    [
+      "X-Selfhost-Proxy",
+      "X-Proxy-Mode",
+      "X-Proxy-Version",
+      "X-Lingche-Backend-Version",
+      "Content-Type",
+      "Content-Length",
+      "Content-Disposition",
+      "Accept-Ranges",
+      "Content-Range",
+    ].join(", ")
   );
-  res.setHeader("Access-Control-Max-Age", "86400");
-
-  for (const [k, v] of Object.entries(extra)) {
-    res.setHeader(k, v);
-  }
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Selfhost-Proxy", "true");
+  res.setHeader("X-Proxy-Mode", "vercel-backend");
+  res.setHeader("X-Proxy-Version", HEALTH_VERSION);
+  res.setHeader("X-Lingche-Backend-Version", HEALTH_VERSION);
 }
 
-export function handleOptions(req, res) {
-  if (req.method === "OPTIONS") {
-    cors(res);
-    res.status(204).end();
-    return true;
-  }
-  return false;
+function normalizeBaseUrl(input) {
+  return String(input || "").trim().replace(/\/+$/, "");
 }
 
-export function sendJson(res, data, status = 200) {
-  cors(res, { "Content-Type": "application/json; charset=utf-8" });
-  res.status(status).send(JSON.stringify(data, null, 2));
-}
+function clientIp(req) {
+  const forwarded = req.headers["x-forwarded-for"];
 
-export async function readBody(req) {
-  if (req.body && typeof req.body === "object") return req.body;
-
-  if (typeof req.body === "string") {
-    try {
-      return JSON.parse(req.body);
-    } catch {
-      return { raw: req.body };
-    }
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",")[0].trim();
   }
 
-  const chunks = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.from(chunk));
+  if (Array.isArray(forwarded) && forwarded.length > 0) {
+    return String(forwarded[0]).split(",")[0].trim();
   }
 
-  const raw = Buffer.concat(chunks).toString("utf8");
-  if (!raw.trim()) return {};
-
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return { raw };
-  }
-}
-
-export function clientIp(req) {
-  const xf = req.headers["x-forwarded-for"];
-  if (typeof xf === "string" && xf.trim()) {
-    return xf.split(",")[0].trim();
-  }
   return req.socket?.remoteAddress || "unknown";
 }
 
-export function safeHeaders(headers) {
-  const out = {};
+function boolEnv(name, fallback = false) {
+  const value = process.env[name];
 
-  for (const [k, v] of Object.entries(headers || {})) {
-    const key = k.toLowerCase();
-
-    if (["authorization", "cookie", "x-api-key"].includes(key)) {
-      out[k] = "[redacted]";
-    } else {
-      out[k] = Array.isArray(v) ? v.join(", ") : String(v ?? "");
-    }
+  if (value === undefined || value === null || value === "") {
+    return fallback;
   }
 
-  return out;
+  return String(value).toLowerCase() === "true";
 }
 
-export function normalizeUrl(raw, { allowHttp = false } = {}) {
-  const value = String(raw || "").trim();
-  if (!value) throw new Error("缺少 url 参数。");
+export default function handler(req, res) {
+  setCors(res);
 
-  const url = new URL(value);
-
-  if (url.protocol !== "https:" && !(allowHttp && url.protocol === "http:")) {
-    throw new Error("只允许 https URL；如需 http，请显式设置 ALLOW_HTTP_MEDIA=true。");
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
   }
 
-  return url;
-}
+  if (req.method === "HEAD") {
+    return res.status(200).end();
+  }
 
-export function hostAllowed(url, env = process.env) {
-  const allowAny = String(env.ALLOW_ANY_HTTPS_MEDIA || "false") === "true";
-  if (allowAny) return true;
-
-  const raw = String(env.ALLOWED_MEDIA_HOSTS || "").trim();
-  if (!raw) return false;
-
-  const host = url.hostname.toLowerCase();
-
-  return raw
-    .split(",")
-    .map((x) => x.trim().toLowerCase())
-    .filter(Boolean)
-    .some((rule) => {
-      if (rule.startsWith("*.")) return host.endsWith(rule.slice(1));
-      return host === rule;
+  if (req.method !== "GET") {
+    return res.status(405).json({
+      ok: false,
+      success: false,
+      error: "Method Not Allowed",
+      allow: ["GET", "HEAD", "OPTIONS"],
     });
-}
+  }
 
-export function randomId(prefix = "lc") {
-  return `${prefix}-${Math.random().toString(16).slice(2)}-${Date.now().toString(16)}`;
-}
+  const deepParseBaseUrl = normalizeBaseUrl(
+    process.env.DEEP_PARSE_BASE_URL || ""
+  );
 
-export function randomizedHeaders(seed = {}) {
-  const langs = [
-    "zh-CN,zh;q=0.9,en;q=0.7",
-    "zh-CN,zh;q=0.8",
-    "en-US,en;q=0.9,zh-CN;q=0.6",
-  ];
+  const hasDeepBackend = Boolean(deepParseBaseUrl);
 
-  const accepts = [
-    "application/json, text/plain, */*",
-    "application/json,*/*",
-    "application/json;charset=utf-8, */*;q=0.8",
-  ];
+  const allowAnyHttpsTarget = boolEnv("ALLOW_ANY_HTTPS_TARGET", false);
+  const allowAnyHttpsMedia = boolEnv("ALLOW_ANY_HTTPS_MEDIA", false);
+  const allowHttpMedia = boolEnv("ALLOW_HTTP_MEDIA", false);
 
-  return {
-    Accept: accepts[Math.floor(Math.random() * accepts.length)],
-    "Accept-Language": langs[Math.floor(Math.random() * langs.length)],
-    "X-Request-ID": randomId("lingche"),
-    "X-Lingche-Experiment": "header-randomization-v1",
-    ...seed,
+  const allowAnyHttpsTask =
+    boolEnv("ALLOW_ANY_HTTPS_TASK", false) ||
+    boolEnv("ALLOW_ANY_HTTPS_TARGET", false);
+
+  const enableImageGenerate = boolEnv("ENABLE_IMAGE_GENERATE", true);
+  const enableVideoGenerate = boolEnv("ENABLE_VIDEO_GENERATE", true);
+  const enableTaskApi = boolEnv("ENABLE_TASK_API", true);
+
+  const capabilities = {
+    health: true,
+    tokenFreeHealthCheck: true,
+
+    chatProxy: true,
+    aiProxy: true,
+    cloudProxy: true,
+
+    headerEcho: true,
+    requestEcho: true,
+    requestHeaderRandomization: true,
+
+    modelCheck: true,
+    fullModelCheck: true,
+    lightweightModelCheck: true,
+    modelCredibilityCheck: true,
+
+    parse: true,
+    urlParse: true,
+    fileParse: true,
+    fileContentProxy: true,
+
+    renderParse: hasDeepBackend,
+    renderParseFallback: true,
+    deepParse: hasDeepBackend,
+
+    role: "V_PARSE_MEDIA",
+
+    sse: true,
+    binaryImage: true,
+    binaryFile: true,
+    base64Image: true,
+    imageUrl: true,
+    fileIdProxy: true,
+
+    mediaContentProxy: true,
+    mediaProxy: true,
+    videoProxy: true,
+    videoPreview: true,
+
+    videoTransport: true,
+    imageTransport: true,
+    audioTransport: true,
+
+    rangeRequest: true,
+    partialContent: true,
+
+    imageGenerate: enableImageGenerate,
+    videoGenerate: enableVideoGenerate,
+
+    taskStatus: enableTaskApi,
+    taskCancel: enableTaskApi,
+    backgroundTask: enableTaskApi,
+    resumableTask: enableTaskApi,
+    cancellableTask: enableTaskApi,
   };
-}
 
-export function stripHtml(html) {
-  return String(html || "")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+  const endpoints = {
+    health: "/api/health",
 
-export function extractTitle(html) {
-  const m = String(html || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  return m ? stripHtml(m[1]).slice(0, 200) : "";
+    chatProxy: "/api/chat/proxy",
+    aiProxy: "/api/chat/proxy",
+    cloudProxy: "/api/chat/proxy",
+
+    headerEcho: "/api/header-echo",
+    requestEcho: "/api/request-echo",
+
+    modelCheck: "/api/model-check",
+    fullModelCheck: "/api/model-check",
+    lightweightModelCheck: "/api/model-check",
+
+    parse: "/api/parse",
+    fileParse: "/api/file/parse",
+    fileContentProxy: "/api/file-content-proxy",
+
+    renderParse: hasDeepBackend ? "/api/render-parse" : null,
+    deepParse: hasDeepBackend ? deepParseBaseUrl : null,
+
+    mediaContentProxy: "/api/media-content-proxy",
+    mediaProxy: "/api/media-content-proxy",
+    videoProxy: "/api/media-content-proxy",
+    videoPreview: "/api/video-preview",
+
+    imageGenerate: enableImageGenerate ? "/api/image-generate" : null,
+    videoGenerate: enableVideoGenerate ? "/api/video-generate" : null,
+
+    taskStatus: enableTaskApi ? "/api/task-status" : null,
+    taskCancel: enableTaskApi ? "/api/task-cancel" : null,
+  };
+
+  return res.status(200).json({
+    ok: true,
+    success: true,
+    status: "ok",
+    ready: true,
+
+    service: "lingche-vercel-backend",
+    name: "lingche-v-backend",
+    projectType: "ai-cloud-proxy-file-media-task-backend",
+
+    version: HEALTH_VERSION,
+    backendVersion: HEALTH_VERSION,
+    frontendTarget: FRONTEND_TARGET,
+
+    runtime: "vercel-serverless",
+    time: new Date().toISOString(),
+
+    health: true,
+
+    chatProxy: capabilities.chatProxy,
+    aiProxy: capabilities.aiProxy,
+    cloudProxy: capabilities.cloudProxy,
+
+    headerEcho: capabilities.headerEcho,
+    requestEcho: capabilities.requestEcho,
+
+    modelCheck: capabilities.modelCheck,
+    fullModelCheck: capabilities.fullModelCheck,
+    lightweightModelCheck: capabilities.lightweightModelCheck,
+    modelCredibilityCheck: capabilities.modelCredibilityCheck,
+
+    parse: capabilities.parse,
+    fileParse: capabilities.fileParse,
+    fileContentProxy: capabilities.fileContentProxy,
+    renderParse: capabilities.renderParse,
+
+    mediaContentProxy: capabilities.mediaContentProxy,
+    mediaProxy: capabilities.mediaProxy,
+    videoProxy: capabilities.videoProxy,
+    videoPreview: capabilities.videoPreview,
+
+    videoTransport: capabilities.videoTransport,
+    imageTransport: capabilities.imageTransport,
+    audioTransport: capabilities.audioTransport,
+
+    rangeRequest: capabilities.rangeRequest,
+    partialContent: capabilities.partialContent,
+
+    imageGenerate: capabilities.imageGenerate,
+    videoGenerate: capabilities.videoGenerate,
+
+    taskStatus: capabilities.taskStatus,
+    taskCancel: capabilities.taskCancel,
+    backgroundTask: capabilities.backgroundTask,
+    resumableTask: capabilities.resumableTask,
+    cancellableTask: capabilities.cancellableTask,
+
+    ipVisibleToVercel: clientIp(req),
+
+    capabilities,
+
+    supports: {
+      ...capabilities,
+    },
+
+    endpoints,
+
+    routes: {
+      ...endpoints,
+      tokenFreeHealthCheck: true,
+    },
+
+    chain: {
+      app: "Android App",
+      publicGateway: "https://feiling.ccwu.cc",
+      gatewayLayer: "Cloudflare Worker",
+      backendLayer: "Vercel",
+      upstream: "Real AI API / Media CDN",
+    },
+
+    envHints: {
+      deepParseBaseUrl: hasDeepBackend ? deepParseBaseUrl : null,
+      hasDeepParseBaseUrl: hasDeepBackend,
+
+      allowAnyHttpsTarget,
+      hasAllowedTargetHosts: Boolean(process.env.ALLOWED_TARGET_HOSTS),
+
+      allowAnyHttpsMedia,
+      allowHttpMedia,
+      hasAllowedMediaHosts: Boolean(process.env.ALLOWED_MEDIA_HOSTS),
+
+      allowAnyHttpsTask,
+      hasAllowedTaskHosts: Boolean(process.env.ALLOWED_TASK_HOSTS),
+
+      enableImageGenerate,
+      enableVideoGenerate,
+      enableTaskApi,
+    },
+
+    env: {
+      hasDeepParseBaseUrl: hasDeepBackend,
+
+      hasAllowedTargetHosts: Boolean(process.env.ALLOWED_TARGET_HOSTS),
+      allowAnyHttpsTarget,
+
+      hasAllowedMediaHosts: Boolean(process.env.ALLOWED_MEDIA_HOSTS),
+      allowAnyHttpsMedia,
+      allowHttpMedia,
+
+      hasAllowedTaskHosts: Boolean(process.env.ALLOWED_TASK_HOSTS),
+      allowAnyHttpsTask,
+
+      enableImageGenerate,
+      enableVideoGenerate,
+      enableTaskApi,
+    },
+
+    notes: [
+      "This health endpoint is upgraded from V34.2 media-compatible backend.",
+      "This file is self-contained and does not import _utils.js.",
+      "chatProxy remains at /api/chat/proxy.",
+      "modelCheck remains at /api/model-check.",
+      "headerEcho is available at /api/header-echo.",
+      "requestEcho is available at /api/request-echo.",
+      "parse remains at /api/parse.",
+      "fileParse remains at /api/file/parse.",
+      "mediaContentProxy remains at /api/media-content-proxy.",
+      "videoPreview is available at /api/video-preview.",
+      "Range transport and 206 Partial Content are declared for media proxy support.",
+      "renderParse is only true when DEEP_PARSE_BASE_URL is configured.",
+      "imageGenerate/videoGenerate/task APIs are declared according to ENABLE_IMAGE_GENERATE, ENABLE_VIDEO_GENERATE and ENABLE_TASK_API.",
+      "Background execution itself is mainly handled by Android Foreground Service / WorkManager.",
+      "For large videos, prefer video_url/download_url and media-content-proxy Range transport.",
+    ],
+  });
 }
